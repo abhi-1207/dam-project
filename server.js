@@ -7,7 +7,7 @@ app.use(express.json());
 app.use(cors());
 
 // ✅ FIXED: use environment variable
-mongoose.connect(process.env.MONGO_URI)
+mongoose.connect("mongodb+srv://admin:admin123@clusterdam.ajupttc.mongodb.net/damDB?retryWrites=true&w=majority")
   .then(() => console.log("✅ MongoDB Connected"))
   .catch(err => console.log(err));
 
