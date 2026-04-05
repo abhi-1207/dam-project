@@ -6,29 +6,35 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ✅ MongoDB
+// ===============================
+// ✅ MongoDB Connection
+// ===============================
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => console.log(err));
+  .catch(err => console.log("❌ DB Error:", err));
 
+// ===============================
 // 🔥 GLOBAL STATE
+// ===============================
 let systemMode = "AUTO";
 let manualGate = "CLOSED";
+let lastGateState = "CLOSED"; // 🔥 prevents flickering
 
-// ✅ Schema
+// ===============================
+// ✅ Schema (ONLY LATEST DATA)
+// ===============================
 const DataSchema = new mongoose.Schema({
-  device: String, // "water", "vibration", "dht"
+  device: { type: String, required: true, unique: true },
   waterLevel: Number,
   vibration: String,
   temperature: Number,
-  gateStatus: String,
   timestamp: { type: Date, default: Date.now }
 });
 
 const Data = mongoose.model("Data", DataSchema);
 
 // ===============================
-// ✅ ESP UPDATE API
+// ✅ UPDATE FROM ESP (UPSERT)
 // ===============================
 app.post("/update", async (req, res) => {
   try {
@@ -38,13 +44,19 @@ app.post("/update", async (req, res) => {
       return res.status(400).json({ error: "device is required" });
     }
 
-    const data = new Data(req.body);
-    await data.save();
+    const updated = await Data.findOneAndUpdate(
+      { device },
+      { ...req.body, timestamp: new Date() },
+      { new: true, upsert: true }
+    );
 
-    res.json({ message: "✅ Data saved" });
+    res.json({
+      message: "✅ Updated",
+      data: updated
+    });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Update Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -54,16 +66,25 @@ app.post("/update", async (req, res) => {
 // ===============================
 app.get("/dashboard", async (req, res) => {
   try {
-    const water = await Data.findOne({ device: "water" }).sort({ timestamp: -1 });
-    const vib = await Data.findOne({ device: "vibration" }).sort({ timestamp: -1 });
-    const dht = await Data.findOne({ device: "dht" }).sort({ timestamp: -1 });
+    const water = await Data.findOne({ device: "water" });
+    const vib = await Data.findOne({ device: "vibration" });
+    const dht = await Data.findOne({ device: "dht" });
 
     let gateStatus;
 
-    // 🔥 FIXED LOGIC
+    // 🔥 SMART CONTROL (NO FLICKER)
     if (systemMode === "AUTO") {
-      gateStatus = water?.waterLevel >= 80 ? "OPEN" : "CLOSED";
+
+      if (water?.waterLevel >= 80) {
+        lastGateState = "OPEN";
+      } else if (water?.waterLevel < 70) {
+        lastGateState = "CLOSED";
+      }
+
+      gateStatus = lastGateState;
+
     } else {
+      lastGateState = manualGate;
       gateStatus = manualGate;
     }
 
@@ -71,21 +92,22 @@ app.get("/dashboard", async (req, res) => {
       waterLevel: water?.waterLevel || 0,
       vibration: vib?.vibration || "SAFE",
       temperature: dht?.temperature || 0,
-      gateStatus: gateStatus,
+      gateStatus,
       mode: systemMode
     });
 
   } catch (err) {
+    console.error("❌ Dashboard Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ===============================
-// ✅ MODE CONTROL
+// ✅ MODE CONTROL (AUTO/MANUAL)
 // ===============================
 app.post("/mode", (req, res) => {
   systemMode = req.body.mode;
-  console.log("Mode:", systemMode);
+  console.log("⚙️ Mode changed:", systemMode);
   res.json({ message: "Mode updated" });
 });
 
@@ -94,22 +116,31 @@ app.post("/mode", (req, res) => {
 // ===============================
 app.post("/gate", (req, res) => {
   manualGate = req.body.status;
-  console.log("Manual Gate:", manualGate);
+  console.log("🚪 Manual Gate:", manualGate);
   res.json({ message: "Gate updated" });
 });
 
 // ===============================
-// ✅ ESP FETCH CONTROL
+// ✅ ESP CONTROL FETCH
 // ===============================
 app.get("/control", async (req, res) => {
   try {
-    const water = await Data.findOne({ device: "water" }).sort({ timestamp: -1 });
+    const water = await Data.findOne({ device: "water" });
 
     let gateStatus;
 
     if (systemMode === "AUTO") {
-      gateStatus = water?.waterLevel >= 80 ? "OPEN" : "CLOSED";
+
+      if (water?.waterLevel >= 80) {
+        lastGateState = "OPEN";
+      } else if (water?.waterLevel < 70) {
+        lastGateState = "CLOSED";
+      }
+
+      gateStatus = lastGateState;
+
     } else {
+      lastGateState = manualGate;
       gateStatus = manualGate;
     }
 
@@ -124,4 +155,12 @@ app.get("/control", async (req, res) => {
 });
 
 // ===============================
-app.listen(3000, () => console.log("🚀 Server running on port 3000"));
+// ✅ HEALTH CHECK
+// ===============================
+app.get("/", (req, res) => {
+  res.send("🚀 Smart Dam Backend Running");
+});
+
+// ===============================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server running on ${PORT}`));
