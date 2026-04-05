@@ -3,108 +3,71 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 
 const app = express();
-
-// ✅ Middlewares
 app.use(express.json());
 app.use(cors());
 
-// 🔍 Request Logger (VERY IMPORTANT)
-app.use((req, res, next) => {
-  console.log(`📡 ${req.method} ${req.url}`);
-  next();
-});
-
-// ✅ MongoDB Connection
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => console.error("❌ MongoDB Error:", err));
+  .then(() => console.log("MongoDB Connected"))
+  .catch(err => console.log(err));
+
+// 🔥 GLOBAL STATE
+let systemMode = "AUTO";
+let manualGate = "CLOSED";
 
 // ✅ Schema
 const DataSchema = new mongoose.Schema({
+  device: String,
   waterLevel: Number,
   vibration: String,
+  temperature: Number,
+  humidity: Number,
   gateStatus: String,
   timestamp: { type: Date, default: Date.now }
 });
 
 const Data = mongoose.model("Data", DataSchema);
 
-// ✅ POST /update (ESP32 will hit this)
+// ✅ Update from ESP
 app.post("/update", async (req, res) => {
-  try {
-    console.log("📥 Incoming Data:", req.body);
-
-    const { waterLevel, vibration, gateStatus } = req.body;
-
-    // 🔒 Validation
-    if (waterLevel === undefined) {
-      return res.status(400).json({ error: "waterLevel is required" });
-    }
-
-    const data = new Data({
-      waterLevel,
-      vibration,
-      gateStatus
-    });
-
-    await data.save();
-
-    res.status(200).json({
-      message: "✅ Data saved successfully",
-      savedData: data
-    });
-
-  } catch (error) {
-    console.error("❌ Error saving data:", error);
-    res.status(500).json({ error: error.message });
-  }
+  const data = new Data(req.body);
+  await data.save();
+  res.json({ message: "Saved" });
 });
 
-// ✅ GET /latest (Frontend uses this)
-app.get("/latest", async (req, res) => {
-  try {
-    const latest = await Data.findOne().sort({ timestamp: -1 });
+// ✅ Dashboard API
+app.get("/dashboard", async (req, res) => {
+  const water = await Data.findOne({ device: "water" }).sort({ timestamp: -1 });
+  const vib = await Data.findOne({ device: "vibration" }).sort({ timestamp: -1 });
+  const dht = await Data.findOne({ device: "dht" }).sort({ timestamp: -1 });
 
-    if (!latest) {
-      return res.status(404).json({ message: "No data found" });
-    }
-
-    res.json(latest);
-
-  } catch (error) {
-    console.error("❌ Error fetching latest:", error);
-    res.status(500).json({ error: error.message });
-  }
+  res.json({
+    waterLevel: water?.waterLevel || 0,
+    vibration: vib?.vibration || "SAFE",
+    temperature: dht?.temperature || 0,
+    humidity: dht?.humidity || 0,
+    gateStatus: water?.gateStatus || "CLOSED",
+    mode: systemMode
+  });
 });
 
-// ✅ TEST route (for manual testing)
-app.get("/test", async (req, res) => {
-  try {
-    const data = new Data({
-      waterLevel: Math.floor(Math.random() * 100),
-      vibration: "SAFE",
-      gateStatus: "CLOSED"
-    });
-
-    await data.save();
-
-    res.json({
-      message: "✅ Test data saved",
-      data
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+// ✅ Mode control
+app.post("/mode", (req, res) => {
+  systemMode = req.body.mode;
+  res.send("Mode updated");
 });
 
-// ✅ Health check (optional but useful)
-app.get("/", (req, res) => {
-  res.send("🚀 Dam Monitoring API is running");
+// ✅ Gate control
+app.post("/gate", (req, res) => {
+  manualGate = req.body.status;
+  res.send("Gate updated");
 });
 
-// ✅ Server Start
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+// ✅ ESP control fetch
+app.get("/control", (req, res) => {
+  res.json({
+    mode: systemMode,
+    manualGate
+  });
 });
+
+app.listen(3000, () => console.log("Server running"));
